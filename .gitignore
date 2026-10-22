@@ -1,3 +1,4 @@
+
 # Miscellaneous
 *.class
 *.log
@@ -7,7 +8,7 @@
 .atom/
 .build/
 .buildlog/
-.history
+.history/
 .svn/
 .swiftpm/
 migrate_working_dir/
@@ -18,28 +19,68 @@ migrate_working_dir/
 *.iws
 .idea/
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
+# VS Code
+# Mantenha .vscode versionado se houver configurações úteis do projeto.
+# .vscode/
 
-# Flutter/Dart/Pub related
+# Flutter / Dart / Pub
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
+.flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
 /build/
 /coverage/
 
-# Symbolication related
+# Symbolication
 app.*.symbols
 
-# Obfuscation related
+# Obfuscation
 app.*.map.json
 
-# Android Studio will place build artifacts here
+# Android build artifacts
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
+/android/.gradle/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+key.properties
+google-services.json
+
+# Apple signing credentials
+*.p12
+*.mobileprovision
+AuthKey_*.p8
+*.cer
+*.provisionprofile
+
+# Apple backend local configuration
+backend-apple/.env
+backend-apple/.env.*
+!backend-apple/.env.example
+backend-apple/node_modules/
+
+# Supabase local configuration and temporary files
+supabase/.env
+supabase/.env.*
+!supabase/.env.example
+supabase/.temp/
+
+# Node.js dependencies and logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+out/

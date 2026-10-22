@@ -2,11 +2,24 @@
 
     <!-- Permissão necessária para o Supabase acessar a rede -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    
+    <!-- Permissão necessária para exibir notificações no Android 13+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
-        android:label="ache_obra"
+        android:label="Ache Obra"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/launcher_icon">
+        
+        <!-- Configuração padrão do ícone e cor das notificações push do Firebase -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification" />
+            
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/colorAccent" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

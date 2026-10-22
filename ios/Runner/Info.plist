@@ -66,5 +66,13 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	
+	<!-- Permissões adicionadas para Câmera, Microfone e Galeria -->
+	<key>NSCameraUsageDescription</key>
+	<string>O Ache Obra precisa acessar sua câmera para registrar o progresso da obra e enviar fotos/vídeos.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>O Ache Obra precisa acessar seu microfone para gravar o áudio do vídeo da obra.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>O Ache Obra precisa acessar sua galeria para enviar fotos e vídeos existentes.</string>
 </dict>
 </plist>

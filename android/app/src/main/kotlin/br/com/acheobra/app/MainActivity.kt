@@ -1,4 +1,4 @@
-package com.example.ache_obra
+package br.com.acheobra.app
 
 import io.flutter.embedding.android.FlutterActivity
 
