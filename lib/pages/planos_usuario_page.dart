@@ -35,14 +35,11 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
   static const String _backendUrl = 'https://efi-backend-1.onrender.com';
   static const String _googleBackendUrl =
       'https://google-backend-e7ti.onrender.com';
-  // Configure com a URL pública do serviço apple-backend.
-  // Não reutilize o backend Google nem o backend Efí.
-  static const String _appleBackendUrl = String.fromEnvironment(
-    'ACHE_OBRA_APPLE_BACKEND_URL',
-    // URL pública do serviço apple-backend no Render.
-    // Pode ser sobrescrita no build usando --dart-define.
-    defaultValue: 'https://apple-backend-501w.onrender.com',
-  );
+  // URL pública fixa do backend Apple no Render.
+  // Assim, a URL não depende de uma variável --dart-define no Codemagic.
+  // Se o endereço do backend mudar, altere-o aqui e faça uma nova compilação.
+  static const String _appleBackendUrl =
+      'https://apple-backend-501w.onrender.com';
   bool _carregando = true;
 
   // Consulta de preços da App Store. Compras iOS ficam bloqueadas até
