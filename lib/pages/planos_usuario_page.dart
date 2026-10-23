@@ -39,7 +39,9 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
   // Não reutilize o backend Google nem o backend Efí.
   static const String _appleBackendUrl = String.fromEnvironment(
     'ACHE_OBRA_APPLE_BACKEND_URL',
-    defaultValue: '',
+    // URL pública do serviço apple-backend no Render.
+    // Pode ser sobrescrita no build usando --dart-define.
+    defaultValue: 'https://apple-backend-501w.onrender.com',
   );
   bool _carregando = true;
 
@@ -3630,7 +3632,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
       }
       final ids = <String>{};
       for (final plano in _planosDisponiveis) {
-        if (plano['apple_ativo'] != true) continue;
+        if (!_toBool(plano['apple_ativo'])) continue;
         final recorrente = (plano['apple_product_id'] ?? '').toString().trim();
         final avulso =
             (plano['apple_product_id_avulso'] ?? '').toString().trim();
@@ -3677,7 +3679,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
     required Map<String, dynamic> plano,
     required bool isRecorrente,
   }) async {
-    final bool appleAtivo = plano['apple_ativo'] == true;
+    final bool appleAtivo = _toBool(plano['apple_ativo']);
     final String campoProduto =
         isRecorrente ? 'apple_product_id' : 'apple_product_id_avulso';
     final String appleProductId = plano[campoProduto]?.toString().trim() ?? '';
@@ -3872,9 +3874,28 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
           return;
         }
 
-        // A data começa AGORA, depois da confirmação real.
-        // Antes ela era criada antes de abrir o checkout; em um PIX
-        // que demorasse para ser pago, a ativação ficava antecipada.
+        // No iOS, o backend Apple já validou a transação e é a autoridade
+        // para gravar o plano no Supabase. Não sobrescrevemos essa gravação
+        // pelo aplicativo; apenas recarregamos o estado vindo do banco.
+        if (Platform.isIOS) {
+          await _identificarTipoECarregarPlanos();
+
+          if (mounted) {
+            final nomeCompleto =
+                plano['nome_plano']?.toString().trim() ?? 'Plano';
+            final nomeBase = nomeCompleto.contains('-')
+                ? nomeCompleto.split('-').last.trim()
+                : nomeCompleto;
+
+            await _mostrarDialogPagamentoConfirmado(
+              nomePlano: nomeBase.isEmpty ? 'Plano' : nomeBase,
+            );
+          }
+          return;
+        }
+
+        // Android e demais fluxos preservam a ativação existente após
+        // confirmação do respectivo checkout.
         final String agoraIso = DateTime.now().toUtc().toIso8601String();
 
         _planoDataAtivacao = _parseDataSupabaseUtc(agoraIso);
@@ -4634,24 +4655,25 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                const Text(
-                  'R\$ ',
-                  style: TextStyle(
-                    color: Color(
-                      0xFFFF8C00,
+                if (produtoAppleExibido == null)
+                  const Text(
+                    'R\$ ',
+                    style: TextStyle(
+                      color: Color(0xFFFF8C00),
+                      fontSize: 16,
                     ),
-                    fontSize: 16,
                   ),
-                ),
-                Text(
-                  produtoAppleExibido?.price ??
-                      valorExibido.toStringAsFixed(2).replaceAll('.', ','),
-                  style: const TextStyle(
-                    color: Color(
-                      0xFFFF8C00,
+                Flexible(
+                  child: Text(
+                    produtoAppleExibido?.price ??
+                        valorExibido.toStringAsFixed(2).replaceAll('.', ','),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFFF8C00),
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
                     ),
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
                   ),
                 ),
                 Text(

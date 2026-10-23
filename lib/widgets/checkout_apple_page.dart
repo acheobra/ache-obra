@@ -296,6 +296,30 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
       return;
     }
 
+    if (widget.planoId.trim().isEmpty || _productId.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _iniciandoCompra = false;
+        _validandoCompra = false;
+        _erro = 'O identificador do plano ou do produto Apple está vazio.';
+        _mensagem = null;
+      });
+      return;
+    }
+
+    final transactionId = compra.purchaseID?.trim() ?? '';
+    if (transactionId.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _iniciandoCompra = false;
+        _validandoCompra = false;
+        _erro = 'A Apple não forneceu o identificador da transação. '
+            'A compra não foi ativada. Tente restaurar a compra ou entre em contato com o suporte.';
+        _mensagem = null;
+      });
+      return;
+    }
+
     _processandoAtualizacao = true;
     try {
       if (mounted) {
@@ -314,7 +338,7 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
         'apple_product_id': compra.productID,
         'tipo_compra': _isSubscription ? 'recorrente' : 'avulso',
         'recorrente': _isSubscription,
-        'transaction_id': compra.purchaseID,
+        'transaction_id': transactionId,
         'transaction_date': compra.transactionDate,
         'verification_source': compra.verificationData.source,
         'verification_data': compra.verificationData.serverVerificationData,
@@ -335,12 +359,26 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
 
       Map<String, dynamic> data = <String, dynamic>{};
       if (response.body.trim().isNotEmpty) {
-        final decoded = jsonDecode(response.body);
-        if (decoded is Map) data = Map<String, dynamic>.from(decoded);
+        try {
+          final decoded = jsonDecode(response.body);
+          if (decoded is Map) {
+            data = Map<String, dynamic>.from(decoded);
+          } else {
+            throw const FormatException('Resposta JSON não é um objeto.');
+          }
+        } on FormatException {
+          throw Exception(
+            'O backend Apple retornou uma resposta inválida '
+            '(HTTP ${response.statusCode}).',
+          );
+        }
       }
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw Exception(
-          data['error'] ??
+          data['mensagem'] ??
+              data['mensagem'] ??
+              data['erro'] ??
+              data['error'] ??
               data['message'] ??
               'Backend Apple retornou HTTP ${response.statusCode}.',
         );
@@ -353,7 +391,9 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
               data['assinatura_ativa'] == true);
       if (!validado) {
         throw Exception(
-          data['error'] ??
+          data['mensagem'] ??
+              data['erro'] ??
+              data['error'] ??
               data['message'] ??
               'A compra ainda não foi confirmada pelo servidor Apple.',
         );
