@@ -734,14 +734,18 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
   }
 
   bool _isPlanoGratis(Map<String, dynamic> plano) {
-    final nomeCompleto = plano['nome_plano']?.toString().toLowerCase() ?? '';
+    final nomeCompleto =
+        plano['nome_plano']?.toString().trim().toLowerCase() ?? '';
 
     final double valorAvulso = _toDouble(plano['valor']);
-
     final double valorRecorrente = _toDouble(plano['valor_recorrente']);
 
-    return nomeCompleto.contains('gratis') ||
-        (valorAvulso == 0 && valorRecorrente == 0);
+    // Aceita as duas grafias, "Gratis" e "Grátis". Não dependemos
+    // apenas do valor porque planos pagos podem ter campos nulos/zerados.
+    final nomeIndicaGratis =
+        nomeCompleto.contains('gratis') || nomeCompleto.contains('grátis');
+
+    return nomeIndicaGratis || (valorAvulso == 0 && valorRecorrente == 0);
   }
 
   bool get _pagamentoPendente =>
@@ -1956,6 +1960,8 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
 
     const campos = <String>[
       'created_at',
+      'criado_em',
+      'data_compra',
       'data_inicio',
       'data_pagamento',
       'updated_at',
@@ -1982,72 +1988,129 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
         basePlan.isNotEmpty;
   }
 
+  bool _compraAppleEhRecorrente(Map<String, dynamic> compraApple) {
+    final tipoCompra =
+        compraApple['tipo_compra']?.toString().trim().toLowerCase() ?? '';
+    return tipoCompra == 'recorrente' || tipoCompra == 'subscription';
+  }
+
+  Future<Map<String, dynamic>?> _buscarCompraAppleDoPlanoAtivo({
+    required SupabaseClient supabase,
+    required String usuarioId,
+    required String planoId,
+  }) async {
+    try {
+      final response = await supabase
+          .from('tab_compras_apple')
+          .select(
+            'transaction_id, original_transaction_id, usuario_id, plano_id, '
+            'product_id, tipo_compra, ambiente, data_compra, data_expiracao, criado_em',
+          )
+          .eq('usuario_id', usuarioId)
+          .eq('plano_id', planoId)
+          .order('criado_em', ascending: false)
+          .limit(10);
+
+      final registros = List<Map<String, dynamic>>.from(response);
+      for (final registro in registros) {
+        final tipo =
+            registro['tipo_compra']?.toString().trim().toLowerCase() ?? '';
+        if (tipo == 'recorrente' ||
+            tipo == 'avulso' ||
+            tipo == 'subscription') {
+          debugPrint(
+            'Compra Apple localizada para o plano ativo: '
+            'transaction=${registro['transaction_id']} '
+            '| original=${registro['original_transaction_id']} '
+            '| tipo=$tipo',
+          );
+          return registro;
+        }
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Não foi possível consultar tab_compras_apple: $e');
+      return null;
+    }
+  }
+
   String _resolverProvedorPlanoAtivo({
     required bool recorrenteAtual,
     Map<String, dynamic>? assinaturaEfi,
     Map<String, dynamic>? pagamentoEfi,
     Map<String, dynamic>? compraGoogle,
+    Map<String, dynamic>? compraApple,
   }) {
     final bool googleRecorrente =
         compraGoogle != null && _compraGoogleEhRecorrente(compraGoogle);
+    final bool appleRecorrente =
+        compraApple != null && _compraAppleEhRecorrente(compraApple);
 
     if (recorrenteAtual) {
-      final bool efiElegivel = assinaturaEfi != null;
-      final bool googleElegivel = compraGoogle != null && googleRecorrente;
-
-      if (efiElegivel && !googleElegivel) return 'efi';
-      if (!efiElegivel && googleElegivel) return 'google';
-      if (!efiElegivel && !googleElegivel) return '';
-
-      final dataEfi = _dataReferenciaRegistro(assinaturaEfi);
-      final dataGoogle = _dataReferenciaRegistro(compraGoogle);
-
-      if (dataEfi != null && dataGoogle != null) {
-        return dataEfi.isAfter(dataGoogle) ? 'efi' : 'google';
+      final candidatos = <MapEntry<String, Map<String, dynamic>>>[];
+      if (assinaturaEfi != null) candidatos.add(MapEntry('efi', assinaturaEfi));
+      if (compraGoogle != null && googleRecorrente) {
+        candidatos.add(MapEntry('google', compraGoogle));
       }
+      if (compraApple != null && appleRecorrente) {
+        candidatos.add(MapEntry('apple', compraApple));
+      }
+      if (candidatos.isEmpty) return '';
+      if (candidatos.length == 1) return candidatos.first.key;
 
-      // Havendo uma assinatura Efí válida e sem datas comparáveis,
-      // não desviamos o cancelamento para um registro Google histórico.
-      return 'efi';
+      candidatos.sort((a, b) {
+        final da = _dataReferenciaRegistro(a.value);
+        final db = _dataReferenciaRegistro(b.value);
+        if (da == null && db == null) return 0;
+        if (da == null) return 1;
+        if (db == null) return -1;
+        return db.compareTo(da);
+      });
+      return candidatos.first.key;
     }
 
-    final bool efiElegivel = pagamentoEfi != null;
-    final bool googleElegivel = compraGoogle != null && !googleRecorrente;
-
-    if (efiElegivel && !googleElegivel) return 'efi';
-    if (!efiElegivel && googleElegivel) return 'google';
-    if (!efiElegivel && !googleElegivel) return '';
-
-    final dataEfi = _dataReferenciaRegistro(pagamentoEfi);
-    final dataGoogle = _dataReferenciaRegistro(compraGoogle);
-
-    if (dataEfi != null && dataGoogle != null) {
-      return dataEfi.isAfter(dataGoogle) ? 'efi' : 'google';
+    final candidatos = <MapEntry<String, Map<String, dynamic>>>[];
+    if (pagamentoEfi != null) candidatos.add(MapEntry('efi', pagamentoEfi));
+    if (compraGoogle != null && !googleRecorrente) {
+      candidatos.add(MapEntry('google', compraGoogle));
     }
+    if (compraApple != null && !appleRecorrente) {
+      candidatos.add(MapEntry('apple', compraApple));
+    }
+    if (candidatos.isEmpty) return '';
+    if (candidatos.length == 1) return candidatos.first.key;
 
-    // Para avulso, se ambos existirem mas não houver data confiável,
-    // preferimos não usar um registro Google antigo para desviar o fluxo Efí.
-    return 'efi';
+    candidatos.sort((a, b) {
+      final da = _dataReferenciaRegistro(a.value);
+      final db = _dataReferenciaRegistro(b.value);
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return db.compareTo(da);
+    });
+    return candidatos.first.key;
   }
 
   Future<Map<String, dynamic>> _buscarPlanoGratisDoMesmoTipo({
     required SupabaseClient supabase,
   }) async {
-    final responseList = await supabase
-        .from('tab_planos')
-        .select()
-        .ilike('nome_plano', '%gratis%');
+    // Não usar ilike('%gratis%'): dependendo da collation do banco,
+    // essa consulta pode não encontrar "Grátis" com acento. Buscamos os
+    // planos e identificamos o gratuito no Flutter com _isPlanoGratis.
+    final responseList = await supabase.from('tab_planos').select();
 
-    if (responseList.isEmpty) {
+    final planosGratis = List<Map<String, dynamic>>.from(responseList)
+        .where(_isPlanoGratis)
+        .toList();
+
+    if (planosGratis.isEmpty) {
       throw 'Nenhum plano Grátis foi encontrado na base de dados.';
     }
 
     Map<String, dynamic>? responseGratis;
     final tipoRealLower = _tipoRealUsuario.toLowerCase();
 
-    for (final item in responseList) {
-      final plano = Map<String, dynamic>.from(item);
-
+    for (final plano in planosGratis) {
       final tipoBanco =
           plano['tipo_usuario']?.toString().trim().toLowerCase() ?? '';
 
@@ -2085,10 +2148,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
       }
     }
 
-    return responseGratis ??
-        Map<String, dynamic>.from(
-          responseList.first,
-        );
+    return responseGratis ?? planosGratis.first;
   }
 
   Future<void> _cancelarPlanoAssinatura() async {
@@ -2182,6 +2242,9 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
     bool cancelamentoGoogle = false;
     bool googleRecorrente = false;
     String mensagemGoogle = '';
+    bool cancelamentoApple = false;
+    bool appleRecorrente = false;
+    String mensagemApple = '';
 
     try {
       final supabase = Supabase.instance.client;
@@ -2322,6 +2385,11 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
         usuarioId: user.id,
         planoId: planoAtivoId,
       );
+      final compraApple = await _buscarCompraAppleDoPlanoAtivo(
+        supabase: supabase,
+        usuarioId: user.id,
+        planoId: planoAtivoId,
+      );
 
       Map<String, dynamic>? assinaturaEfi;
       Map<String, dynamic>? pagamentoEfi;
@@ -2345,6 +2413,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
         assinaturaEfi: assinaturaEfi,
         pagamentoEfi: pagamentoEfi,
         compraGoogle: compraGoogle,
+        compraApple: compraApple,
       );
 
       debugPrint(
@@ -2399,6 +2468,99 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
           '| recorrente=$googleRecorrente '
           '| status=${dataGoogle['status'] ?? '-'}',
         );
+      } else if (provedor == 'apple') {
+        // ======================================================
+        // APPLE APP STORE - CANCELAMENTO NO ACHE OBRA
+        // ======================================================
+        // O backend valida a transação e aplica a mesma regra de
+        // retorno ao plano Grátis usada no fluxo Google. A API Apple
+        // não permite desligar a renovação automática por esta rota;
+        // para evitar nova cobrança, o usuário também deve confirmar
+        // o cancelamento na tela oficial de Assinaturas da Apple.
+        final compraAppleConfirmada = compraApple;
+        if (compraAppleConfirmada == null) {
+          throw 'O provedor Apple foi identificado, mas a compra ativa não foi localizada.';
+        }
+
+        final transactionId =
+            compraAppleConfirmada['transaction_id']?.toString().trim() ?? '';
+        final originalTransactionId =
+            compraAppleConfirmada['original_transaction_id']
+                    ?.toString()
+                    .trim() ??
+                '';
+
+        if (transactionId.isEmpty && originalTransactionId.isEmpty) {
+          throw 'A compra Apple não possui um identificador válido para cancelamento.';
+        }
+
+        appleRecorrente = _compraAppleEhRecorrente(compraAppleConfirmada);
+        final response = await http
+            .post(
+              Uri.parse('$_appleBackendUrl/apple/cancelar-plano'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ${session.accessToken}',
+              },
+              body: jsonEncode({
+                if (transactionId.isNotEmpty) 'transaction_id': transactionId,
+                if (originalTransactionId.isNotEmpty)
+                  'original_transaction_id': originalTransactionId,
+                'plano_id': planoAtivoId,
+                'tipo_compra': appleRecorrente ? 'recorrente' : 'avulso',
+                'motivo':
+                    'Cancelamento solicitado pelo usuário no aplicativo Ache Obra.',
+              }),
+            )
+            .timeout(const Duration(seconds: 60));
+
+        Map<String, dynamic> dataApple = {};
+        try {
+          final decoded = jsonDecode(response.body);
+          if (decoded is Map) {
+            dataApple = Map<String, dynamic>.from(decoded);
+          }
+        } catch (_) {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            throw 'O servidor Apple retornou uma resposta inválida ao cancelar o plano.';
+          }
+        }
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          dynamic mensagemServidor = dataApple['mensagem'] ??
+              dataApple['message'] ??
+              dataApple['error'] ??
+              'Não foi possível cancelar o plano comprado pela Apple.';
+          if (mensagemServidor is Map || mensagemServidor is List) {
+            mensagemServidor = jsonEncode(mensagemServidor);
+          }
+          throw mensagemServidor.toString();
+        }
+
+        if (dataApple['success'] != true && dataApple['ok'] != true) {
+          dynamic mensagemServidor = dataApple['mensagem'] ??
+              dataApple['message'] ??
+              dataApple['error'] ??
+              'O backend Apple não confirmou o cancelamento.';
+          if (mensagemServidor is Map || mensagemServidor is List) {
+            mensagemServidor = jsonEncode(mensagemServidor);
+          }
+          throw mensagemServidor.toString();
+        }
+
+        cancelamentoApple = true;
+        mensagemApple = dataApple['mensagem']?.toString().trim() ??
+            dataApple['message']?.toString().trim() ??
+            '';
+
+        if (appleRecorrente) {
+          const avisoRenovacaoApple =
+              ' Importante: isso encerra seu plano dentro do Ache Obra, mas não desativa a renovação automática da Apple. Para evitar futuras cobranças, cancele também em Ajustes do iPhone > seu nome > Assinaturas.';
+          if (!mensagemApple.toLowerCase().contains('renovação automática')) {
+            mensagemApple =
+                '${mensagemApple.isEmpty ? 'Plano Apple cancelado no Ache Obra.' : mensagemApple}$avisoRenovacaoApple';
+          }
+        }
       } else if (provedor == 'efi' && _recorrenteAtivo) {
         // ======================================================
         // EFÍ - ASSINATURA RECORRENTE
@@ -2701,7 +2863,17 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
       String mensagemFinal;
       Color corMensagem = Colors.green;
 
-      if (cancelamentoGoogle) {
+      if (cancelamentoApple) {
+        mensagemFinal = mensagemApple.isNotEmpty
+            ? mensagemApple
+            : appleRecorrente
+                ? 'Plano removido do Ache Obra e conta retornada ao plano Grátis. '
+                    'Para interromper futuras cobranças, confirme o cancelamento em Assinaturas da sua Conta Apple.'
+                : 'Cancelamento da compra Apple registrado. Você retornou ao plano Grátis.';
+        if (appleRecorrente) {
+          corMensagem = Colors.orange;
+        }
+      } else if (cancelamentoGoogle) {
         if (mensagemGoogle.isNotEmpty) {
           mensagemFinal = mensagemGoogle;
         } else if (googleRecorrente) {
