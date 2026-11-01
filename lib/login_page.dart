@@ -69,7 +69,7 @@ class _LoginPageState extends State<LoginPage> {
 
   String? _validarSenha(String password) {
     if (password.length < 6 || password.length > 8) {
-      return "A senha deve ter no mínimo 6 e no máximo 8 dígitos.";
+      return "A senha deve ter no mínimo 4 e no máximo 8 dígitos.";
     }
 
     if (!RegExp(r'^\d+$').hasMatch(password)) {
@@ -492,7 +492,7 @@ class _LoginPageState extends State<LoginPage> {
                   LengthLimitingTextInputFormatter(8),
                 ],
                 style: const TextStyle(color: Colors.white),
-                decoration: _inputDecoration("Senha (6 a 8 números)").copyWith(
+                decoration: _inputDecoration("Senha (4 a 8 números)").copyWith(
                   suffixIcon: IconButton(
                     icon: Icon(
                         _isPasswordVisible

@@ -124,6 +124,8 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
   dynamic _idPlanoProcessando;
   String? _efiSubscriptionIdProcessando;
   Timer? _timerMonitoramentoPlanos;
+  Timer? _timerSincronizacaoGoogle;
+  bool _sincronizacaoGoogleEmAndamento = false;
   bool _consultaStatusPlanosEmAndamento = false;
 
   final Map<dynamic, bool> _escolhaRecorrente = {};
@@ -134,10 +136,15 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
 
     _identificarTipoECarregarPlanos().then((_) async {
       if (Platform.isIOS) await _carregarProdutosApple();
+
+      // Reconcilia compras Google com o backend ao abrir a tela. Isso cobre
+      // cancelamentos feitos fora do app quando o RTDN/Pub/Sub atrasar ou falhar.
+      await _sincronizarPlanoGoogleExterno(recarregarSeAlterado: true);
       await _atualizarStatusVisualPlanos();
 
       if (mounted) {
         _configurarMonitoramentoPlanos();
+        _configurarSincronizacaoGoogle();
       }
     });
   }
@@ -146,6 +153,8 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
   void dispose() {
     _timerMonitoramentoPlanos?.cancel();
     _timerMonitoramentoPlanos = null;
+    _timerSincronizacaoGoogle?.cancel();
+    _timerSincronizacaoGoogle = null;
     _timerIntervaloTrocaPlano?.cancel();
     _timerIntervaloTrocaPlano = null;
     super.dispose();
@@ -435,6 +444,109 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
         await _atualizarStatusVisualPlanos();
       },
     );
+  }
+
+  // O RTDN do Google é assíncrono. Enquanto a tela de planos estiver aberta,
+  // consultamos periodicamente o backend usando o purchase_token já registrado.
+  // O servidor valida o estado diretamente na API Google e, se confirmado o
+  // cancelamento/reembolso, sincroniza tab_assinaturas_google e tab_usuarios.
+  void _configurarSincronizacaoGoogle() {
+    _timerSincronizacaoGoogle?.cancel();
+    _timerSincronizacaoGoogle = null;
+
+    if (!Platform.isAndroid) return;
+
+    _timerSincronizacaoGoogle = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) async {
+        await _sincronizarPlanoGoogleExterno(recarregarSeAlterado: true);
+      },
+    );
+  }
+
+  Future<void> _sincronizarPlanoGoogleExterno({
+    bool recarregarSeAlterado = false,
+  }) async {
+    if (!Platform.isAndroid || _sincronizacaoGoogleEmAndamento) return;
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null || _idPlanoAtivoUsuario == null) return;
+
+    _sincronizacaoGoogleEmAndamento = true;
+    try {
+      final compra = await _buscarCompraGoogleDoPlanoAtivo(
+        supabase: Supabase.instance.client,
+        usuarioId: user.id,
+        planoId: _idPlanoAtivoUsuario.toString(),
+        incluirEncerradas: true,
+      );
+      if (compra == null) return;
+
+      final purchaseToken = compra['purchase_token']?.toString().trim() ?? '';
+      if (purchaseToken.isEmpty) return;
+
+      final session = Supabase.instance.client.auth.currentSession;
+      if (session == null || session.accessToken.isEmpty) return;
+
+      final uri = Uri.parse(
+        '$_googleBackendUrl/google/status/${Uri.encodeComponent(purchaseToken)}',
+      );
+      final response = await http.get(
+        uri,
+        headers: {
+          'Authorization': 'Bearer ${session.accessToken}',
+          'Accept': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 40));
+
+      Map<String, dynamic> data = {};
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map) data = Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+
+      if (response.statusCode < 200 ||
+          response.statusCode >= 300 ||
+          data['success'] != true) {
+        debugPrint(
+          '[GOOGLE][SYNC] Não foi possível reconciliar compra externa. '
+          'HTTP=${response.statusCode} erro=${data['error'] ?? '-'}',
+        );
+        return;
+      }
+
+      final bool planoFoiAlterado = data['plano_gratis_ativado'] == true ||
+          data['plano_alterado'] == true ||
+          data['sincronizado'] == true;
+
+      final google = data['google'];
+      final googleMap = google is Map
+          ? Map<String, dynamic>.from(google)
+          : <String, dynamic>{};
+      final subscriptionState = googleMap['subscriptionState']?.toString() ??
+          data['status_google']?.toString() ??
+          '-';
+
+      debugPrint(
+        '[GOOGLE][SYNC] Status consultado. '
+        'status=${data['status'] ?? subscriptionState} '
+        '| status_local=${data['local'] is Map ? (data['local'] as Map)['status_assinatura'] : '-'} '
+        '| downgrade=$planoFoiAlterado',
+      );
+
+      // O backend pode sincronizar uma assinatura cancelada enquanto o
+      // estado do usuário ainda está em cache na tela. Recarregamos todos os
+      // dados do usuário/planos sempre que o servidor confirmar a sincronização.
+      if (recarregarSeAlterado && planoFoiAlterado && mounted) {
+        await _identificarTipoECarregarPlanos();
+        if (mounted) setState(() {});
+      }
+    } catch (e) {
+      // Uma falha temporária de rede não deve impedir a abertura da tela.
+      debugPrint('[GOOGLE][SYNC] Falha ao sincronizar status externo: $e');
+    } finally {
+      _sincronizacaoGoogleEmAndamento = false;
+    }
   }
 
   Future<Map<String, dynamic>?> _buscarAssinaturaPendenteMaisRecente({
@@ -817,6 +929,20 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
     _dataFimCarencia = null;
 
     if (!_recorrenteAtivo || _idPlanoAtivoUsuario == null) {
+      return;
+    }
+
+    // IMPORTANTE: na versão Android distribuída pela Google Play, o status
+    // visual da assinatura deve vir do fluxo Google, não de tab_assinaturas
+    // (tabela da Efí). Pode existir ali uma assinatura antiga da Efí com
+    // status 'cancelado'; lê-la aqui fazia aparecer incorretamente o aviso
+    // 'Esta assinatura recorrente está cancelada' mesmo com a compra Google
+    // ativa e com renovação habilitada. Não misturamos os estados dos provedores.
+    if (Platform.isAndroid && _somenteGooglePlay) {
+      debugPrint(
+        '[PLANOS][STATUS_ASSINATURA] Consulta de tab_assinaturas ignorada: '
+        'Android/Google Play usa tab_assinaturas_google e o backend Google.',
+      );
       return;
     }
 
@@ -1731,6 +1857,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
     required SupabaseClient supabase,
     required String usuarioId,
     required String planoId,
+    bool incluirEncerradas = false,
   }) async {
     try {
       final response = await supabase
@@ -1768,7 +1895,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
             registro['status_assinatura']?.toString().trim().toLowerCase() ??
                 '';
 
-        if (!statusIgnorados.contains(status)) {
+        if (incluirEncerradas || !statusIgnorados.contains(status)) {
           debugPrint(
             'Compra Google localizada para o plano ativo: '
             'id=${registro['id']} '

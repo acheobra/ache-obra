@@ -12,6 +12,8 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../widgets/checkout_google.dart';
 
+import '../widgets/checkout_apple_page.dart';
+
 // EFÍPAY INATIVA (código preservado para futura reativação):
 
 // import '../widgets/checkout_modal.dart';
@@ -33,9 +35,14 @@ class _SeloVerificacaoPageState extends State<SeloVerificacaoPage> {
   bool _selecionandoPagamento = false;
 
   static const String _googleBackendUrl =
-      'https\://google-backend-e7ti.onrender.com';
+      'https://google-backend-e7ti.onrender.com';
 
   static const String _googleProductId = 'selo_verificacao_avulso';
+
+  // Produto avulso cadastrado no App Store Connect para iOS.
+  static const String _appleProductId = 'selo_verificacao_avulso';
+  static const String _appleBackendUrl =
+      'https://apple-backend-501w.onrender.com';
 
   String _tipoPessoa = 'Fisica';
 
@@ -220,6 +227,9 @@ class _SeloVerificacaoPageState extends State<SeloVerificacaoPage> {
 
             _tipoPessoa = response['tipo_pessoa'] ?? 'Fisica';
 
+            // Mantém a data e o indicador de vencimento sincronizados com o banco.
+            _dataExpiracao = exp;
+            _seloVencido = venceu;
             _dataExpiracaoFormatada = _formatarDataBR(rawExp);
           });
         } else if (mounted) {
@@ -946,16 +956,202 @@ class _SeloVerificacaoPageState extends State<SeloVerificacaoPage> {
     return resultado == true;
   }
 
-  Future<bool> _processarPagamentoSelo() async {
-    // Não apresentar EfíPay, Pix ou seleção de gateway.
-
-    if (kIsWeb || !Platform.isAndroid) {
-      _avisarPagamento('Pagamento disponível pela Google Play no Android.');
-
+  Future<bool> _abrirCheckoutApple() async {
+    if (!mounted || _planoSeloId == null || _planoSeloId!.isEmpty) {
+      _avisarPagamento(
+        'Não foi possível carregar a configuração do selo. Tente novamente.',
+      );
       return false;
     }
 
-    return _abrirCheckoutGoogle();
+    // O checkout compartilhado chama o identificador de planoId. Nesta tela,
+    // o valor enviado é o ID de tab_planos_selos; o backend Apple deve tratar
+    // o produto selo_verificacao_avulso como selo avulso, sem gravá-lo em
+    // tab_compras_apple nem ativar uma assinatura de usuário.
+    final resultado = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (pageContext) => CheckoutApplePage(
+          planoId: _planoSeloId!,
+          nomePlano: 'Selo de Verificação',
+          appleProductId: _appleProductId,
+          serverAppleUrl: _appleBackendUrl,
+          recorrente: false,
+          onCompraAprovada: () {
+            if (Navigator.of(pageContext).canPop()) {
+              Navigator.of(pageContext).pop(true);
+            }
+          },
+        ),
+      ),
+    );
+
+    return resultado == true;
+  }
+
+  Future<bool> _processarPagamentoSelo() async {
+    // Mantém o fluxo nativo de cada loja separado. EfíPay permanece inativa.
+    if (kIsWeb) {
+      _avisarPagamento(
+        'O pagamento do selo deve ser realizado pelo aplicativo em um dispositivo móvel.',
+      );
+      return false;
+    }
+
+    if (Platform.isAndroid) {
+      return _abrirCheckoutGoogle();
+    }
+
+    if (Platform.isIOS) {
+      return _abrirCheckoutApple();
+    }
+
+    _avisarPagamento(
+      'Pagamento do selo disponível pelo Google Play no Android ou pela App Store no iPhone.',
+    );
+    return false;
+  }
+
+  /// Confirmação visual exibida somente depois que o checkout da loja
+  /// retorna compra aprovada pelo backend.
+  Future<bool> _mostrarConfirmacaoPagamento() async {
+    if (!mounted) return false;
+
+    final bool isIOS = !kIsWeb && Platform.isIOS;
+    final String loja = isIOS ? 'App Store' : 'Google Play';
+    final Color azulAcheObra = const Color(0xFF1A2C42);
+    final Color verdeSucesso = const Color(0xFF21A366);
+
+    final resultado = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 22),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: azulAcheObra.withValues(alpha: 0.18),
+                  blurRadius: 28,
+                  offset: const Offset(0, 12),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 78,
+                  height: 78,
+                  decoration: BoxDecoration(
+                    color: verdeSucesso.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.check_circle_rounded,
+                    color: verdeSucesso,
+                    size: 58,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Pagamento confirmado!',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: azulAcheObra,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    height: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Recebemos a confirmação do pagamento do seu Selo de Verificação.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF526071),
+                    fontSize: 15,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF2F6FA),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        isIOS ? Icons.phone_iphone_rounded : Icons.shop_rounded,
+                        color: azulAcheObra,
+                        size: 22,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Compra processada pela $loja',
+                          style: TextStyle(
+                            color: azulAcheObra,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Toque em OK para continuar e enviar sua solicitação para análise.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF526071),
+                    fontSize: 13,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: azulAcheObra,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: const Text(
+                      'OK, CONTINUAR',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    return resultado == true;
   }
 
   Future<void> _enviarSolicitacao() async {
@@ -1022,6 +1218,11 @@ class _SeloVerificacaoPageState extends State<SeloVerificacaoPage> {
     }
 
     if (!mounted || !pagamentoAprovado) return;
+
+    // Exige confirmação explícita do usuário após a loja/backend confirmar
+    // a compra. O envio dos documentos só continua depois de tocar em OK.
+    final confirmouPagamento = await _mostrarConfirmacaoPagamento();
+    if (!mounted || !confirmouPagamento) return;
 
     // 3. Processamento e Envio após Pagamento Aprovado
 
@@ -1533,7 +1734,7 @@ class _SeloVerificacaoPageState extends State<SeloVerificacaoPage> {
                 ),
                 child: Text(
                   'Seu selo venceu${_dataExpiracaoFormatada == null ? '' : ' em $_dataExpiracaoFormatada'}. '
-                  'Para renovar, anexe os documentos e realize um novo pagamento pela Google Play. '
+                  'Para renovar, anexe os documentos e realize um novo pagamento pela loja do seu dispositivo. '
                   'A renovação será enviada para análise.',
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                 ),
