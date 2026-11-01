@@ -1567,6 +1567,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
 
 // =====================================================================
 // TELA INICIAL DO APP (MOBILE / LOCALHOST)
+// Layout responsivo para diferentes alturas e larguras de dispositivos.
 // =====================================================================
 class AcheObraHome extends StatelessWidget {
   const AcheObraHome({super.key});
@@ -1576,129 +1577,278 @@ class AcheObraHome extends StatelessWidget {
     return Scaffold(
       backgroundColor: const Color(0xFF1A2C42),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            children: [
-              const Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Text("🇧🇷", style: TextStyle(fontSize: 30)),
-                ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final availableHeight = constraints.maxHeight;
+            final availableWidth = constraints.maxWidth;
+
+            // Reduz os elementos gradualmente em telas mais baixas.
+            // Em telas extremamente pequenas, a rolagem continua disponível
+            // para evitar que qualquer botão fique inacessível ou cortado.
+            final scale = (availableHeight / 850.0).clamp(0.55, 1.0).toDouble();
+
+            final horizontalPadding =
+                (availableWidth * 0.05).clamp(12.0, 20.0).toDouble();
+            final verticalPadding =
+                (availableHeight * 0.015).clamp(5.0, 14.0).toDouble();
+            final contentWidth = (availableWidth - (horizontalPadding * 2))
+                .clamp(0.0, 480.0)
+                .toDouble();
+            final innerHeight = (availableHeight - (verticalPadding * 2))
+                .clamp(0.0, double.infinity)
+                .toDouble();
+
+            final logoSize = (150.0 * scale).clamp(82.0, 150.0).toDouble();
+            final logoVerticalPadding =
+                (20.0 * scale).clamp(5.0, 18.0).toDouble();
+            final smallGap = (15.0 * scale).clamp(5.0, 13.0).toDouble();
+            final sectionFontSize = (18.0 * scale).clamp(13.0, 18.0).toDouble();
+            final dividerHeight = (40.0 * scale).clamp(18.0, 36.0).toDouble();
+            final loginFontSize = (14.0 * scale).clamp(12.0, 14.0).toDouble();
+
+            return SingleChildScrollView(
+              physics: const ClampingScrollPhysics(),
+              padding: EdgeInsets.symmetric(
+                horizontal: horizontalPadding,
+                vertical: verticalPadding,
               ),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 20),
-                child: Image.asset('assets/Logo_ache_obra.png',
-                    width: 150, height: 150, fit: BoxFit.contain),
-              ),
-              const Text("QUERO ME CADASTRAR",
-                  style: TextStyle(
-                      color: Colors.orange,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold)),
-              const SizedBox(height: 15),
-              _buildButton(context, "SOU CLIENTE",
-                  "Precisa de um serviço? Encontre profissionais."),
-              _buildButton(context, "SOU PROFISSIONAL",
-                  "É pedreiro, pintor, eletricista ou outros?"),
-              _buildButton(
-                  context, "SOU ARQUITETO(a)", "Planeje sonhos com segurança."),
-              _buildButton(context, "SOU ENGENHEIRO(a) CIVIL",
-                  "Projetos e execuções de obras."),
-              const Divider(color: Colors.white24, height: 40),
-              const Text("JÁ SOU CADASTRADO",
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold)),
-              const SizedBox(height: 15),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    side: const BorderSide(color: Colors.orange),
-                    padding: const EdgeInsets.symmetric(vertical: 15),
+              child: Center(
+                child: SizedBox(
+                  width: contentWidth,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: innerHeight),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            Text(
+                              '🇧🇷',
+                              style: TextStyle(
+                                fontSize:
+                                    (30.0 * scale).clamp(18.0, 30.0).toDouble(),
+                              ),
+                            ),
+                          ],
+                        ),
+                        Padding(
+                          padding: EdgeInsets.symmetric(
+                            vertical: logoVerticalPadding,
+                          ),
+                          child: Center(
+                            child: Image.asset(
+                              'assets/Logo_ache_obra.png',
+                              width: logoSize,
+                              height: logoSize,
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          'QUERO ME CADASTRAR',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.orange,
+                            fontSize: sectionFontSize,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: smallGap),
+                        _buildButton(
+                          context,
+                          'SOU CLIENTE',
+                          'Precisa de um serviço? Encontre profissionais.',
+                          scale,
+                        ),
+                        _buildButton(
+                          context,
+                          'SOU PROFISSIONAL',
+                          'É pedreiro, pintor, eletricista ou outros?',
+                          scale,
+                        ),
+                        _buildButton(
+                          context,
+                          'SOU ARQUITETO(a)',
+                          'Planeje sonhos com segurança.',
+                          scale,
+                        ),
+                        _buildButton(
+                          context,
+                          'SOU ENGENHEIRO(a) CIVIL',
+                          'Projetos e execuções de obras.',
+                          scale,
+                        ),
+                        Divider(
+                          color: Colors.white24,
+                          height: dividerHeight,
+                          thickness: 1,
+                        ),
+                        Text(
+                          'JÁ SOU CADASTRADO',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: sectionFontSize,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(height: smallGap),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              foregroundColor: Colors.white,
+                              side: const BorderSide(color: Colors.orange),
+                              minimumSize: Size(
+                                double.infinity,
+                                (48.0 * scale).clamp(38.0, 48.0).toDouble(),
+                              ),
+                              padding: EdgeInsets.symmetric(
+                                vertical:
+                                    (15.0 * scale).clamp(7.0, 15.0).toDouble(),
+                                horizontal: 10,
+                              ),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const LoginPage(),
+                              ),
+                            ),
+                            child: Text(
+                              'FAZER LOGIN',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: loginFontSize,
+                              ),
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.orange,
+                            minimumSize: Size(
+                              double.infinity,
+                              (40.0 * scale).clamp(32.0, 40.0).toDouble(),
+                            ),
+                            padding: EdgeInsets.symmetric(
+                              vertical:
+                                  (6.0 * scale).clamp(2.0, 6.0).toDouble(),
+                            ),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          onPressed: () =>
+                              mostrarDialogoEsqueciSenhaGlobal(context),
+                          child: Text(
+                            'Esqueci minha senha',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.orange,
+                              fontSize:
+                                  (14.0 * scale).clamp(11.5, 14.0).toDouble(),
+                              decoration: TextDecoration.underline,
+                              decorationColor: Colors.orange,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (context) => const LoginPage())),
-                  child: const Text("FAZER LOGIN",
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold)),
                 ),
               ),
-              const SizedBox(height: 10),
-              TextButton(
-                onPressed: () => mostrarDialogoEsqueciSenhaGlobal(context),
-                child: const Text(
-                  "Esqueci minha senha",
-                  style: TextStyle(
-                    color: Colors.orange,
-                    fontSize: 14,
-                    decoration: TextDecoration.underline,
-                    decorationColor: Colors.orange,
-                  ),
-                ),
-              ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _buildButton(BuildContext context, String title, String desc) {
+  Widget _buildButton(
+    BuildContext context,
+    String title,
+    String desc,
+    double scale,
+  ) {
+    final titleFontSize = (18.0 * scale).clamp(14.0, 18.0).toDouble();
+    final descriptionFontSize = (14.0 * scale).clamp(11.0, 14.0).toDouble();
+    final verticalPadding = (18.0 * scale).clamp(8.0, 16.0).toDouble();
+    final verticalMargin = (8.0 * scale).clamp(3.0, 8.0).toDouble();
+
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
+      margin: EdgeInsets.symmetric(vertical: verticalMargin),
       width: double.infinity,
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFFFF8C00),
-            padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 10)),
+          backgroundColor: const Color(0xFFFF8C00),
+          foregroundColor: Colors.black,
+          minimumSize: Size(
+            double.infinity,
+            (48.0 * scale).clamp(40.0, 48.0).toDouble(),
+          ),
+          padding: EdgeInsets.symmetric(
+            vertical: verticalPadding,
+            horizontal: 10,
+          ),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
         onPressed: () {
-          if (title == "SOU CLIENTE") {
+          if (title == 'SOU CLIENTE') {
             Navigator.push(
               context,
               MaterialPageRoute(
-                  builder: (context) => const CadastroClientePage()),
+                builder: (context) => const CadastroClientePage(),
+              ),
             );
-          } else if (title == "SOU PROFISSIONAL") {
+          } else if (title == 'SOU PROFISSIONAL') {
             Navigator.push(
               context,
               MaterialPageRoute(
-                  builder: (context) => const CadastroProfissionalPage()),
+                builder: (context) => const CadastroProfissionalPage(),
+              ),
             );
-          } else if (title == "SOU ARQUITETO(a)") {
+          } else if (title == 'SOU ARQUITETO(a)') {
             Navigator.push(
               context,
               MaterialPageRoute(
-                  builder: (context) => const CadastroArquitetoPage()),
+                builder: (context) => const CadastroArquitetoPage(),
+              ),
             );
-          } else if (title == "SOU ENGENHEIRO(a) CIVIL") {
+          } else if (title == 'SOU ENGENHEIRO(a) CIVIL') {
             Navigator.push(
               context,
               MaterialPageRoute(
-                  builder: (context) => const CadastroEngenheiroPage()),
+                builder: (context) => const CadastroEngenheiroPage(),
+              ),
             );
           }
         },
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Text(
               title,
-              style: const TextStyle(
+              textAlign: TextAlign.center,
+              style: TextStyle(
                 fontWeight: FontWeight.w900,
-                fontSize: 18,
+                fontSize: titleFontSize,
                 color: Colors.black,
               ),
             ),
-            const SizedBox(height: 4),
+            SizedBox(height: (4.0 * scale).clamp(2.0, 4.0).toDouble()),
             Text(
               desc,
-              style: const TextStyle(fontSize: 14, color: Colors.white),
+              style: TextStyle(
+                fontSize: descriptionFontSize,
+                color: Colors.white,
+              ),
               textAlign: TextAlign.center,
+              softWrap: true,
             ),
           ],
         ),
