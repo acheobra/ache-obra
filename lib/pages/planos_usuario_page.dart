@@ -40,6 +40,22 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
   // Se o endereço do backend mudar, altere-o aqui e faça uma nova compilação.
   static const String _appleBackendUrl =
       'https://apple-backend-501w.onrender.com';
+
+  // Usa sempre a URL fixa acima. Não depende de --dart-define, .env,
+  // variáveis do Codemagic ou configuração do Render no aplicativo.
+  String get _appleBackendBaseUrl =>
+      _appleBackendUrl.trim().replaceAll(RegExp(r'/+$'), '');
+
+  bool get _appleBackendConfigurado {
+    final uri = Uri.tryParse(_appleBackendBaseUrl);
+    return uri != null &&
+        uri.scheme.toLowerCase() == 'https' &&
+        uri.host.toLowerCase() == 'apple-backend-501w.onrender.com' &&
+        uri.userInfo.isEmpty &&
+        uri.query.isEmpty &&
+        uri.fragment.isEmpty;
+  }
+
   bool _carregando = true;
 
   // Consulta de preços da App Store. Compras iOS ficam bloqueadas até
@@ -2624,7 +2640,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
         appleRecorrente = _compraAppleEhRecorrente(compraAppleConfirmada);
         final response = await http
             .post(
-              Uri.parse('$_appleBackendUrl/apple/cancelar-plano'),
+              Uri.parse('$_appleBackendBaseUrl/apple/cancelar-plano'),
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer ${session.accessToken}',
@@ -4010,13 +4026,23 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
       return false;
     }
 
-    if (_appleBackendUrl.trim().isEmpty) {
+    // Diagnóstico explícito: confirma em runtime qual URL este build está
+    // usando. A configuração é fixa neste arquivo e não exige dart-define.
+    final String appleBackendUrl = _appleBackendBaseUrl;
+    final bool backendValido = _appleBackendConfigurado;
+    debugPrint(
+      '[APPLE][PLANOS][BUILD_URL_FIX_20261102] '
+      'backend=$appleBackendUrl valido=$backendValido '
+      'produto=$appleProductId recorrente=$isRecorrente',
+    );
+
+    if (!backendValido) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'O backend Apple ainda não foi configurado. '
-              'Defina ACHE_OBRA_APPLE_BACKEND_URL antes de habilitar compras.',
+              'O endereço fixo do backend Apple está inválido nesta versão. '
+              'Confira a URL em planos_usuario_page.dart.',
             ),
             backgroundColor: Colors.orange,
             duration: Duration(seconds: 7),
@@ -4036,7 +4062,7 @@ class _PlanosUsuarioPageState extends State<PlanosUsuarioPage> {
             planoId: plano['id'].toString(),
             nomePlano: nomeCompleto,
             appleProductId: appleProductId,
-            serverAppleUrl: _appleBackendUrl,
+            serverAppleUrl: appleBackendUrl,
             recorrente: isRecorrente,
             onCompraAprovada: () {
               if (Navigator.of(pageContext).canPop()) {
