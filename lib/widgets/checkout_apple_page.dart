@@ -50,7 +50,19 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
   bool _iniciandoCompra = false;
   bool _validandoCompra = false;
   bool _compraAprovada = false;
-  bool _processandoAtualizacao = false;
+
+  // As atualizações do purchaseStream são processadas em série. O stream pode
+  // entregar mais de uma atualização enquanto uma validação HTTP está em curso;
+  // não descartamos eventos apenas porque outro evento está sendo processado.
+  final List<PurchaseDetails> _filaAtualizacoesCompra = <PurchaseDetails>[];
+  final Set<String> _eventosNaFila = <String>{};
+  bool _processandoFila = false;
+
+  // Mantém a PurchaseDetails recebida quando a validação falha. Isso permite
+  // reenviar a MESMA transação ao backend, sem iniciar uma nova cobrança.
+  PurchaseDetails? _compraPendenteValidacao;
+  PurchaseDetails? _compraAguardandoApple;
+  bool _bloqueioPorTransacaoDuplicada = false;
 
   String? _erro;
   String? _mensagem;
@@ -65,15 +77,18 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
   @override
   void initState() {
     super.initState();
+    // A assinatura do stream é criada antes da consulta do produto para
+    // aumentar a chance de receber transações pendentes ao abrir este checkout.
+    // Para recuperação mesmo quando esta tela não está aberta, o app também
+    // deve manter um listener único no ciclo de vida global (main.dart).
     _purchaseSubscription = _iap.purchaseStream.listen(
-      _processarAtualizacoesCompra,
+      _receberAtualizacoesCompra,
       onDone: () => _purchaseSubscription?.cancel(),
       onError: (Object error) {
         if (!mounted) return;
         setState(() {
           _iniciandoCompra = false;
           _validandoCompra = false;
-          _processandoAtualizacao = false;
           _erro = 'Erro ao receber atualização da App Store: $error';
           _mensagem = null;
         });
@@ -166,21 +181,47 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
   Future<void> _comprarComApple() async {
     if (_iniciandoCompra || _validandoCompra || _compraAprovada) return;
 
+    // Se o StoreKit já entregou uma transação, primeiro tentamos validar
+    // essa transação. Nunca abrimos uma nova compra por cima dela.
+    final compraPendente = _compraPendenteValidacao;
+    if (compraPendente != null) {
+      await _revalidarCompraPendente();
+      return;
+    }
+
+    if (_compraAguardandoApple != null || _bloqueioPorTransacaoDuplicada) {
+      if (mounted) {
+        setState(() {
+          _erro = 'Existe uma transação anterior deste produto ainda pendente '
+              'na App Store. Não inicie outra compra. Use a opção de recuperação '
+              'abaixo ou feche e abra novamente o Ache Obra para receber a '
+              'atualização pendente do StoreKit.';
+          _mensagem = null;
+        });
+      }
+      return;
+    }
+
     final produto = _produtoSelecionado;
     if (produto == null) {
-      setState(() => _erro = 'O produto Apple ainda não foi carregado.');
+      if (mounted)
+        setState(() => _erro = 'O produto Apple ainda não foi carregado.');
       return;
     }
 
     final user = _supabase.auth.currentUser;
     if (user == null) {
-      setState(
-          () => _erro = 'Você precisa estar logado para realizar a compra.');
+      if (mounted) {
+        setState(
+            () => _erro = 'Você precisa estar logado para realizar a compra.');
+      }
       return;
     }
     if (_serverBaseUrl.isEmpty) {
-      setState(() =>
-          _erro = 'O endereço do backend Apple ainda não foi configurado.');
+      if (mounted) {
+        setState(() =>
+            _erro = 'O endereço do backend Apple ainda não foi configurado.');
+      }
       return;
     }
 
@@ -191,20 +232,20 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
         _mensagem = 'Abrindo a confirmação de compra da Apple...';
       });
 
-      // A App Store apresenta a interface nativa de compra.
       final purchaseParam = PurchaseParam(
         productDetails: produto,
         applicationUserName: user.id,
       );
 
-      // O produto avulso deve estar cadastrado como consumível na App Store
-      // Connect se puder ser comprado novamente. Recorrência usa assinatura.
+      // Os produtos avulsos do projeto estão cadastrados como consumíveis;
+      // as opções recorrentes são assinaturas não consumíveis no StoreKit.
       final iniciado = _isSubscription
           ? await _iap.buyNonConsumable(purchaseParam: purchaseParam)
           : await _iap.buyConsumable(
               purchaseParam: purchaseParam,
               autoConsume: false,
             );
+
       if (!iniciado && mounted) {
         setState(() {
           _iniciandoCompra = false;
@@ -214,94 +255,214 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
       }
     } catch (e) {
       if (!mounted) return;
+      final detalhe = e.toString();
+      final duplicada =
+          detalhe.toLowerCase().contains('storekit_duplicate_product_object') ||
+              detalhe
+                  .toLowerCase()
+                  .contains('pending transaction for the same product');
       setState(() {
         _iniciandoCompra = false;
         _mensagem = null;
-        _erro = 'Não foi possível abrir a compra da Apple: $e';
+        if (duplicada) {
+          _bloqueioPorTransacaoDuplicada = true;
+          _erro = 'A Apple encontrou uma transação anterior ainda aberta para '
+              'este produto. Nenhuma nova compra foi iniciada. Tente recuperar '
+              'a transação pendente; não faça outra cobrança.';
+        } else {
+          _erro = 'Não foi possível abrir a compra da Apple: $detalhe';
+        }
       });
+      debugPrint(
+          '[APPLE][COMPRA_INICIAR_FALHOU] produto=$_productId duplicada=$duplicada erro=$detalhe');
     }
   }
 
-  Future<void> _processarAtualizacoesCompra(
-    List<PurchaseDetails> compras,
-  ) async {
-    for (final compra in compras) {
-      if (compra.productID != _productId) continue;
+  String _chaveEventoCompra(PurchaseDetails compra) {
+    final id = compra.purchaseID?.trim();
+    final base = (id != null && id.isNotEmpty)
+        ? id
+        : '${compra.productID}|${compra.transactionDate ?? ''}|${identityHashCode(compra)}';
+    return '$base|${compra.status.name}';
+  }
 
-      switch (compra.status) {
-        case PurchaseStatus.pending:
-          if (!mounted) return;
-          setState(() {
-            _iniciandoCompra = false;
-            _validandoCompra = false;
-            _mensagem = 'A compra está pendente na App Store.';
-            _erro = null;
-          });
-          break;
-        case PurchaseStatus.purchased:
-        case PurchaseStatus.restored:
-          await _validarCompraNoBackend(compra);
-          break;
-        case PurchaseStatus.error:
-          if (mounted) {
-            setState(() {
-              _iniciandoCompra = false;
-              _validandoCompra = false;
-              _mensagem = null;
-              _erro = compra.error?.message ??
-                  'A App Store informou um erro na compra.';
-            });
-          }
-          if (compra.pendingCompletePurchase) await _finalizarCompra(compra);
-          break;
-        case PurchaseStatus.canceled:
-          if (mounted) {
-            setState(() {
-              _iniciandoCompra = false;
-              _validandoCompra = false;
-              _mensagem = 'Compra cancelada.';
-              _erro = null;
-            });
-          }
-          if (compra.pendingCompletePurchase) await _finalizarCompra(compra);
-          break;
+  void _receberAtualizacoesCompra(List<PurchaseDetails> compras) {
+    for (final compra in compras) {
+      // Esta tela só pode validar o produto que foi efetivamente selecionado.
+      // Transações de outros produtos não devem ser finalizadas aqui.
+      if (compra.productID != _productId) {
+        debugPrint(
+            '[APPLE][STREAM_OUTRO_PRODUTO] recebido=${compra.productID} esperado=$_productId');
+        continue;
+      }
+
+      final chave = _chaveEventoCompra(compra);
+      if (_eventosNaFila.add(chave)) {
+        _filaAtualizacoesCompra.add(compra);
+      }
+    }
+
+    unawaited(_processarFilaAtualizacoesCompra());
+  }
+
+  Future<void> _processarFilaAtualizacoesCompra() async {
+    if (_processandoFila) return;
+    _processandoFila = true;
+
+    try {
+      while (_filaAtualizacoesCompra.isNotEmpty) {
+        final compra = _filaAtualizacoesCompra.removeAt(0);
+        final chave = _chaveEventoCompra(compra);
+        try {
+          await _processarUmaAtualizacaoCompra(compra);
+        } catch (e, stack) {
+          debugPrint('[APPLE][STREAM_PROCESSAMENTO_FALHOU] erro=$e\n$stack');
+        } finally {
+          _eventosNaFila.remove(chave);
+        }
+      }
+    } finally {
+      _processandoFila = false;
+      // Se um evento chegou no instante em que a fila estava terminando,
+      // garante que ele também seja processado.
+      if (_filaAtualizacoesCompra.isNotEmpty) {
+        unawaited(_processarFilaAtualizacoesCompra());
       }
     }
   }
 
+  Future<void> _processarUmaAtualizacaoCompra(PurchaseDetails compra) async {
+    debugPrint(
+        '[APPLE][STREAM] produto=${compra.productID} status=${compra.status.name} '
+        'transaction=${compra.purchaseID ?? '-'} pendingComplete=${compra.pendingCompletePurchase}');
+
+    switch (compra.status) {
+      case PurchaseStatus.pending:
+        _compraAguardandoApple = compra;
+        if (!mounted) return;
+        setState(() {
+          _iniciandoCompra = false;
+          _validandoCompra = false;
+          _mensagem = 'A Apple ainda está processando esta compra. Aguarde; '
+              'não inicie outra compra deste mesmo produto.';
+          _erro = null;
+        });
+        break;
+
+      case PurchaseStatus.purchased:
+      case PurchaseStatus.restored:
+        _compraAguardandoApple = null;
+        _bloqueioPorTransacaoDuplicada = false;
+        await _validarCompraNoBackend(compra);
+        break;
+
+      case PurchaseStatus.error:
+        _compraAguardandoApple = null;
+        _compraPendenteValidacao = null;
+        _bloqueioPorTransacaoDuplicada = false;
+        if (mounted) {
+          setState(() {
+            _iniciandoCompra = false;
+            _validandoCompra = false;
+            _mensagem = null;
+            _erro = compra.error?.message ??
+                'A App Store informou um erro na compra.';
+          });
+        }
+        // Erro/cancelamento não concede benefício. Se o plugin exigir a
+        // conclusão da atualização, liberamos a fila local do StoreKit.
+        if (compra.pendingCompletePurchase) await _finalizarCompra(compra);
+        break;
+
+      case PurchaseStatus.canceled:
+        _compraAguardandoApple = null;
+        _compraPendenteValidacao = null;
+        _bloqueioPorTransacaoDuplicada = false;
+        if (mounted) {
+          setState(() {
+            _iniciandoCompra = false;
+            _validandoCompra = false;
+            _mensagem = 'Compra cancelada.';
+            _erro = null;
+          });
+        }
+        if (compra.pendingCompletePurchase) await _finalizarCompra(compra);
+        break;
+    }
+  }
+
+  Future<void> _revalidarCompraPendente() async {
+    final compra = _compraPendenteValidacao;
+    if (compra == null) {
+      await _verificarTransacaoPendente();
+      return;
+    }
+    if (_validandoCompra) return;
+    await _validarCompraNoBackend(compra);
+  }
+
+  Future<void> _verificarTransacaoPendente() async {
+    if (_compraAguardandoApple != null) {
+      if (!mounted) return;
+      setState(() {
+        _mensagem =
+            'A transação continua pendente na Apple. Aguarde a atualização '
+            'do StoreKit e não tente comprar novamente.';
+        _erro = null;
+      });
+      return;
+    }
+
+    if (_isSubscription) {
+      await _restaurarCompras();
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _mensagem =
+          'O StoreKit informou que existe uma transação avulsa anterior '
+          'aberta, mas ainda não entregou seus dados ao aplicativo. Feche '
+          'completamente o Ache Obra, abra novamente e entre neste mesmo produto. '
+          'O aplicativo tentará receber e validar a transação pendente. Não faça '
+          'uma nova compra enquanto esse aviso permanecer.';
+      _erro = null;
+    });
+  }
+
   Future<void> _validarCompraNoBackend(PurchaseDetails compra) async {
-    if (_processandoAtualizacao || _validandoCompra) return;
+    if (_validandoCompra) {
+      // Não descartamos a transação que chegou enquanto outra validação
+      // estava em curso. Ela fica disponível para nova tentativa manual.
+      _compraPendenteValidacao = compra;
+      return;
+    }
 
     final user = _supabase.auth.currentUser;
     final session = _supabase.auth.currentSession;
     if (user == null || session == null) {
+      _compraPendenteValidacao = compra;
       if (!mounted) return;
       setState(() {
         _iniciandoCompra = false;
         _validandoCompra = false;
-        _erro =
-            'Sua sessão expirou. Entre novamente antes de validar a compra.';
-        _mensagem = null;
-      });
-      return;
-    }
-    if (_serverBaseUrl.isEmpty) {
-      if (!mounted) return;
-      setState(() {
-        _iniciandoCompra = false;
-        _validandoCompra = false;
-        _erro = 'O backend Apple ainda não foi configurado.';
+        _erro = 'Sua sessão expirou. Entre novamente e toque em '
+            '“Tentar validar compra pendente”. Não faça outra compra.';
         _mensagem = null;
       });
       return;
     }
 
-    if (widget.planoId.trim().isEmpty || _productId.isEmpty) {
+    if (_serverBaseUrl.isEmpty ||
+        widget.planoId.trim().isEmpty ||
+        _productId.isEmpty) {
+      _compraPendenteValidacao = compra;
       if (!mounted) return;
       setState(() {
         _iniciandoCompra = false;
         _validandoCompra = false;
-        _erro = 'O identificador do plano ou do produto Apple está vazio.';
+        _erro = 'Faltam dados do checkout Apple. A transação foi preservada; '
+            'corrija a configuração antes de tentar novamente.';
         _mensagem = null;
       });
       return;
@@ -309,28 +470,29 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
 
     final transactionId = compra.purchaseID?.trim() ?? '';
     if (transactionId.isEmpty) {
+      _compraPendenteValidacao = compra;
       if (!mounted) return;
       setState(() {
         _iniciandoCompra = false;
         _validandoCompra = false;
-        _erro = 'A Apple não forneceu o identificador da transação. '
-            'A compra não foi ativada. Tente restaurar a compra ou entre em contato com o suporte.';
+        _erro = 'A Apple entregou a compra sem identificador de transação. '
+            'A compra não será finalizada nem repetida automaticamente.';
         _mensagem = null;
       });
       return;
     }
 
-    _processandoAtualizacao = true;
-    try {
-      if (mounted) {
-        setState(() {
-          _iniciandoCompra = false;
-          _validandoCompra = true;
-          _erro = null;
-          _mensagem = 'Validando compra com a Apple...';
-        });
-      }
+    _validandoCompra = true;
+    _compraPendenteValidacao = compra;
+    if (mounted) {
+      setState(() {
+        _iniciandoCompra = false;
+        _erro = null;
+        _mensagem = 'Validando compra com a Apple...';
+      });
+    }
 
+    try {
       final uri = Uri.parse('$_serverBaseUrl/apple/validar-compra');
       final payload = <String, dynamic>{
         'usuario_id': user.id,
@@ -359,49 +521,64 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
 
       Map<String, dynamic> data = <String, dynamic>{};
       if (response.body.trim().isNotEmpty) {
-        try {
-          final decoded = jsonDecode(response.body);
-          if (decoded is Map) {
-            data = Map<String, dynamic>.from(decoded);
-          } else {
-            throw const FormatException('Resposta JSON não é um objeto.');
-          }
-        } on FormatException {
-          throw Exception(
-            'O backend Apple retornou uma resposta inválida '
-            '(HTTP ${response.statusCode}).',
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map) {
+          data = Map<String, dynamic>.from(decoded);
+        } else {
+          throw FormatException(
+            'O backend Apple retornou JSON inválido (HTTP ${response.statusCode}).',
           );
         }
       }
+
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw Exception(
-          data['mensagem'] ??
-              data['mensagem'] ??
-              data['erro'] ??
-              data['error'] ??
-              data['message'] ??
-              'Backend Apple retornou HTTP ${response.statusCode}.',
-        );
+        final detalhe = data['mensagem'] ??
+            data['erro'] ??
+            data['error'] ??
+            data['message'] ??
+            'HTTP ${response.statusCode}';
+        throw Exception('Backend Apple: $detalhe');
       }
 
-      // Nunca libera o plano com base apenas no status retornado pelo aparelho.
+      // O servidor precisa afirmar explicitamente que validou a transação.
       final validado = data['success'] == true &&
           (data['validado'] == true ||
               data['purchase_valid'] == true ||
               data['assinatura_ativa'] == true);
       if (!validado) {
-        throw Exception(
-          data['mensagem'] ??
-              data['erro'] ??
-              data['error'] ??
-              data['message'] ??
-              'A compra ainda não foi confirmada pelo servidor Apple.',
-        );
+        final detalhe = data['mensagem'] ??
+            data['erro'] ??
+            data['error'] ??
+            data['message'] ??
+            'A Apple ainda não confirmou a compra no servidor.';
+        throw Exception(detalhe.toString());
       }
 
-      await _finalizarCompra(compra);
+      // Só finaliza a transação do StoreKit depois da confirmação do servidor.
+      // Se a finalização local falhar, mantém a mesma PurchaseDetails para retry;
+      // a rota do backend deve responder idempotentemente na próxima consulta.
+      final finalizada = await _finalizarCompra(compra);
+      if (!finalizada) {
+        _compraPendenteValidacao = compra;
+        if (mounted) {
+          setState(() {
+            _iniciandoCompra = false;
+            _validandoCompra = false;
+            _erro = 'A Apple confirmou o pagamento, mas o iPhone não conseguiu '
+                'finalizar a transação local. Toque em “Tentar validar compra '
+                'pendente”; não faça outra compra.';
+            _mensagem = null;
+          });
+        }
+        return;
+      }
+
+      _compraPendenteValidacao = null;
+      _compraAguardandoApple = null;
+      _bloqueioPorTransacaoDuplicada = false;
       if (!mounted) return;
       setState(() {
+        _iniciandoCompra = false;
         _validandoCompra = false;
         _compraAprovada = true;
         _mensagem = 'Pagamento aprovado pela Apple!';
@@ -409,41 +586,69 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
       });
       widget.onCompraAprovada?.call();
     } on TimeoutException {
+      _compraPendenteValidacao = compra;
       if (!mounted) return;
       setState(() {
+        _iniciandoCompra = false;
         _validandoCompra = false;
-        _erro = 'O servidor Apple demorou para responder. Não tente comprar '
-            'novamente imediatamente. Abra esta tela novamente para recuperar a compra.';
+        _erro = 'O servidor Apple demorou para responder. A transação foi '
+            'mantida para recuperação. Toque em “Tentar validar compra pendente”; '
+            'não inicie outra compra.';
         _mensagem = null;
       });
+      debugPrint(
+          '[APPLE][VALIDACAO_TIMEOUT] produto=${compra.productID} transaction=$transactionId');
     } catch (e) {
+      _compraPendenteValidacao = compra;
       if (!mounted) return;
       setState(() {
+        _iniciandoCompra = false;
         _validandoCompra = false;
         _erro = e.toString().replaceFirst('Exception: ', '');
-        _mensagem = null;
+        _mensagem = 'A transação foi preservada. Corrija o problema e tente '
+            'validá-la novamente, sem iniciar outra cobrança.';
       });
-      debugPrint('[APPLE] Falha na validação da compra: $e');
+      debugPrint(
+          '[APPLE][VALIDACAO_FALHOU] produto=${compra.productID} transaction=$transactionId erro=$e');
     } finally {
-      _processandoAtualizacao = false;
+      _validandoCompra = false;
+      if (mounted) setState(() {});
     }
   }
 
-  Future<void> _finalizarCompra(PurchaseDetails compra) async {
-    if (!compra.pendingCompletePurchase) return;
+  Future<bool> _finalizarCompra(PurchaseDetails compra) async {
+    if (!compra.pendingCompletePurchase) return true;
     try {
       await _iap.completePurchase(compra);
+      debugPrint(
+          '[APPLE][COMPRA_FINALIZADA] produto=${compra.productID} transaction=${compra.purchaseID ?? '-'}');
+      return true;
     } catch (e) {
-      debugPrint('[APPLE] Falha ao finalizar compra localmente: $e');
+      debugPrint(
+          '[APPLE][COMPLETE_PURCHASE_FALHOU] produto=${compra.productID} transaction=${compra.purchaseID ?? '-'} erro=$e');
+      return false;
     }
   }
 
   Future<void> _restaurarCompras() async {
-    try {
+    if (!_isSubscription) {
+      if (!mounted) return;
       setState(() {
+        _mensagem = 'Compras avulsas consumíveis não são recuperadas pelo '
+            'botão de restauração da Apple. A transação pendente deve ser '
+            'recebida pelo purchaseStream e validada no servidor.';
         _erro = null;
-        _mensagem = 'Procurando compras anteriores na Apple...';
       });
+      return;
+    }
+
+    try {
+      if (mounted) {
+        setState(() {
+          _erro = null;
+          _mensagem = 'Procurando compras anteriores na Apple...';
+        });
+      }
       await _iap.restorePurchases();
     } catch (e) {
       if (!mounted) return;
@@ -626,9 +831,14 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
                               _produtoSelecionado == null ||
                               _iniciandoCompra ||
                               _validandoCompra ||
-                              _compraAprovada)
+                              _compraAprovada ||
+                              _compraAguardandoApple != null ||
+                              (_bloqueioPorTransacaoDuplicada &&
+                                  _compraPendenteValidacao == null))
                           ? null
-                          : _comprarComApple,
+                          : (_compraPendenteValidacao != null
+                              ? _revalidarCompraPendente
+                              : _comprarComApple),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: laranja,
                         foregroundColor: Colors.white,
@@ -652,21 +862,49 @@ class _CheckoutApplePageState extends State<CheckoutApplePage> {
                             ? 'COMPRA APROVADA'
                             : _validandoCompra
                                 ? 'VALIDANDO COMPRA...'
-                                : _iniciandoCompra
-                                    ? 'ABRINDO APP STORE...'
-                                    : 'PAGAR COM APPLE',
+                                : _compraPendenteValidacao != null
+                                    ? 'TENTAR VALIDAR COMPRA PENDENTE'
+                                    : _iniciandoCompra
+                                        ? 'ABRINDO APP STORE...'
+                                        : 'PAGAR COM APPLE',
                         style: const TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 15),
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    TextButton(
-                      onPressed: (_iniciandoCompra || _validandoCompra)
-                          ? null
-                          : _restaurarCompras,
-                      child: const Text('Restaurar compra anterior',
-                          style: TextStyle(color: Colors.white60)),
-                    ),
+                    if (_compraPendenteValidacao != null) ...[
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed:
+                            _validandoCompra ? null : _revalidarCompraPendente,
+                        child: const Text(
+                          'Tentar validar compra pendente',
+                          style: TextStyle(color: Colors.white60),
+                        ),
+                      ),
+                    ] else if (_bloqueioPorTransacaoDuplicada ||
+                        _compraAguardandoApple != null) ...[
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed: _validandoCompra
+                            ? null
+                            : _verificarTransacaoPendente,
+                        child: const Text(
+                          'Verificar transação pendente',
+                          style: TextStyle(color: Colors.white60),
+                        ),
+                      ),
+                    ] else if (_isSubscription) ...[
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed: (_iniciandoCompra || _validandoCompra)
+                            ? null
+                            : _restaurarCompras,
+                        child: const Text(
+                          'Restaurar compra anterior',
+                          style: TextStyle(color: Colors.white60),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     const Text(
                       'O pagamento e a assinatura são processados pela Apple. '
